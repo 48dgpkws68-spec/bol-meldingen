@@ -3,6 +3,8 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+  push:
+    paths: [".github/**", "check_orders.py"]
 permissions:
   contents: write
 concurrency: check
