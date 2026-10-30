@@ -5,6 +5,7 @@ CLIENT_ID = os.environ["BOL_CLIENT_ID"]
 CLIENT_SECRET = os.environ["BOL_CLIENT_SECRET"]
 NTFY_TOPIC = os.environ["NTFY_TOPIC"]
 STATE = pathlib.Path(__file__).with_name("seen.json")
+BACKFILL = pathlib.Path(__file__).with_name("backfill.txt")  # order-ids die alsnog gemeld moeten worden (bijv. van voor de eerste run)
 ACCEPT = "application/vnd.retailer.v10+json"
 
 
@@ -26,8 +27,26 @@ def notify(title, body):
         headers={"Title": title.encode("ascii", "ignore").decode(), "Tags": "moneybag", "Priority": "high"}), timeout=30)
 
 
+def meld(oid, headers, eerder=False):
+    detail = request(f"https://api.bol.com/retailer/orders/{oid}", headers=headers)
+    lines, total = [], 0.0
+    for item in detail.get("orderItems", []):
+        qty = item.get("quantity", 1)
+        name = item.get("product", {}).get("title") or item.get("offer", {}).get("reference") or "Product"
+        price = float(item.get("unitPrice", 0)) * qty
+        total += price
+        lines.append(f"{qty}x {name} · €{price:.2f}".replace(".", ","))
+    datum = (detail.get("orderPlacedDateTime") or "")[:10]
+    extra = f"\nBesteld op {datum}" if datum else ""
+    notify(f"{'Eerder verkocht' if eerder else 'Verkocht'} op bol: EUR {total:.2f}", "\n".join(lines) + extra + f"\nOrder {oid}")
+
+
 def main():
     headers = {"Authorization": f"Bearer {token()}", "Accept": ACCEPT}
+    if BACKFILL.exists():
+        for oid in BACKFILL.read_text().split():
+            meld(oid, headers, eerder=True)
+        BACKFILL.write_text("")
     orders = []
     for method in ("FBR", "FBB"):
         data = request(f"https://api.bol.com/retailer/orders?status=ALL&fulfilment-method={method}", headers=headers)
@@ -43,15 +62,7 @@ def main():
         seen.add(oid)
         if first_run:  # bestaande orders niet melden bij de eerste keer
             continue
-        detail = request(f"https://api.bol.com/retailer/orders/{oid}", headers=headers)
-        lines, total = [], 0.0
-        for item in detail.get("orderItems", []):
-            qty = item.get("quantity", 1)
-            name = item.get("product", {}).get("title") or item.get("offer", {}).get("reference") or "Product"
-            price = float(item.get("unitPrice", 0)) * qty
-            total += price
-            lines.append(f"{qty}x {name} · €{price:.2f}".replace(".", ","))
-        notify(f"Verkocht op bol: EUR {total:.2f}", "\n".join(lines) + f"\nOrder {oid}")
+        meld(oid, headers)
 
     STATE.write_text(json.dumps(sorted(seen)))
 
